@@ -263,6 +263,22 @@ void parseInfo(uint8_t *data, int len) {
 
   uint kmregister = (data[0] * 256) + data[1];
 
+  // kmRxBuf.buf is a fixed-size, never-cleared buffer - a block shorter
+  // than this floor would have every case below read data[2] (or beyond)
+  // from stale bytes left over by a previous, longer block instead of
+  // from this message, and silently publish that as a fresh, valid
+  // reading. This is a conservative minimum (every case references at
+  // least data[2]), not a full per-register length check - some
+  // registers need more than 3 bytes and could still rarely read a
+  // couple of stale trailing bytes from a corrupt-but-checksum-valid
+  // short block. See docs/firmware-security-review.md #4 in the
+  // logamatic project for the full writeup of this finding.
+  if (len < 3) {
+    snprintf(tmpMessage, sizeof(tmpMessage), "block too short to parse safely: register 0x%04x, len %d", kmregister, len);
+    km271Msg(KM_TYP_DEBUG, tmpMessage, "");
+    return;
+  }
+
   /********************************************************
    * publish all incomming messages for debug reasons
    ********************************************************/
@@ -2346,15 +2362,31 @@ void km271sendCmdFlt(e_km271_sendCmd sendCmd, float cmdPara) {
 /**
  * *******************************************************************
  * @brief   prepare and send setvalues to buderus controller
+ * @details the KM_TSK_LOGGING send-loop (see handleRxBlock) uses
+ *          "send_buf[0] != 0" as its only signal that a command is
+ *          queued. Every OTHER sender in this file always writes a
+ *          fixed, non-zero Data-Type byte (0x01/0x07/0x08/0x0C/0x11/0x12)
+ *          into send_buf[0], so that sentinel works for them - but this
+ *          is the one path where the first byte comes directly from the
+ *          caller (the "cmd/service" MQTT topic) and could be 0x00. That
+ *          previously copied the command into send_buf and returned
+ *          void, so it silently never got sent (the send-loop saw
+ *          send_buf[0] == 0 and reported "nothing queued"), while the
+ *          MQTT handler logged "service message accepted" regardless.
  * @param   sendCmd: send command
  * @param   cmdPara: array of 8 hex parameter (pre checked)
- * @return  none
+ * @return  true if the command was queued for sending, false if rejected
+ *          (cmdPara[0] == 0x00 can't be queued - see details above)
  * *******************************************************************/
-void km271sendServiceCmd(uint8_t cmdPara[8]) {
+bool km271sendServiceCmd(uint8_t cmdPara[8]) {
+  if (cmdPara[0] == 0) {
+    return false;
+  }
   // service command with 8 pre checked hex parameters
   for (uint8_t i = 0; i < 8; i++) {
     send_buf[i] = cmdPara[i];
   }
+  return true;
 }
 
 /**
@@ -2479,17 +2511,31 @@ bool decodeErrorMsg(char *errorMsg, unsigned int size, uint8_t *data) {
     snprintf(errorMsg, size, "%s", errMsgText.idx[config.mqtt.lang][0]);
     return false;
   } else {
+    uint8_t errIndex = getErrorTextIndex(data[2]);
+    // errMsgText only covers the officially documented range (see
+    // getErrorTextIndex) - if this raw code fell back to the generic
+    // "unknown error" entry, still surface the actual number so it can be
+    // looked up (or reported/added to the table) instead of being lost.
+    // Discovering that this was the case, with no way to get the number
+    // back short of capturing and manually decoding the raw serial
+    // telegram, is exactly what motivated expanding the table in the
+    // first place - see docs/firmware-improvement-error-table.md in the
+    // logamatic project.
+    char codeSuffix[16] = "";
+    if (errIndex == 214) {
+      snprintf(codeSuffix, sizeof(codeSuffix), " [code %d]", data[2]);
+    }
     // error already acknowledged
     if (data[6] != 0xFF) {
       // Aussenfuehler defekt (>> 16:31 -3 Tage | << 20:40 -2 Tage)
-      snprintf(errorMsg, size, "%s (>> %02i:%02i -%i %s | << %02i:%02i -%i %s)", errMsgText.idx[config.mqtt.lang][getErrorTextIndex(data[2])],
-               data[3], data[4], (data[5] + data[8]), MQTT_MSG::DAYS[config.mqtt.lang], data[6], data[7], data[8], MQTT_MSG::DAYS[config.mqtt.lang]);
+      snprintf(errorMsg, size, "%s%s (>> %02i:%02i -%i %s | << %02i:%02i -%i %s)", errMsgText.idx[config.mqtt.lang][errIndex], codeSuffix, data[3],
+               data[4], (data[5] + data[8]), MQTT_MSG::DAYS[config.mqtt.lang], data[6], data[7], data[8], MQTT_MSG::DAYS[config.mqtt.lang]);
       return false;
     }
     // unacknowledged error
     else {
       // example: Aussenfuehler defekt (>> 16:31 -3 Tage)
-      snprintf(errorMsg, size, "%s (>> %02i:%02i -%i %s)", errMsgText.idx[config.mqtt.lang][getErrorTextIndex(data[2])], data[3], data[4], data[5],
+      snprintf(errorMsg, size, "%s%s (>> %02i:%02i -%i %s)", errMsgText.idx[config.mqtt.lang][errIndex], codeSuffix, data[3], data[4], data[5],
                MQTT_MSG::DAYS[config.mqtt.lang]);
       return true;
     }

@@ -331,7 +331,7 @@ void sendKM271Info();
 void sendKM271Debug();
 void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara);
 void km271sendCmdFlt(e_km271_sendCmd sendCmd, float cmdPara);
-void km271sendServiceCmd(uint8_t cmdPara[8]);
+bool km271sendServiceCmd(uint8_t cmdPara[8]);
 bool km271GetLogMode();
 unsigned long km271GetTxBytes();
 unsigned long km271GetRxBytes();
