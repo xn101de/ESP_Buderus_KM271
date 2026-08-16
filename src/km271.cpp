@@ -2450,97 +2450,22 @@ void decodeTimer(char *timerInfo, unsigned int size, uint8_t dateOnOff, uint8_t 
 /**
  * *******************************************************************
  * @brief   get the index of the error message for the given error number
+ * @details errMsgText now covers the full official Buderus fault-code
+ *          range 0-213 (Buderus doc 7747004149, "Technische Information -
+ *          Monitordaten System 4000", section 3.1 "Aktuelle Fehlerliste"),
+ *          so the raw error number IS the array index directly - no
+ *          lookup table needed anymore. Any code outside the documented
+ *          range (214-255) clamps to index 214, the generic "unknown
+ *          error" fallback entry.
+ *          Previously this only recognized 26 of the ~213 documented
+ *          codes and silently mapped everything else to "unknown error"
+ *          - e.g. code 93 (Handschalter Heizkreis 1) or a phantom-module
+ *          fault would show as "unknown error" with no way to tell what
+ *          actually happened without reading the raw serial bytes.
  * @param   errorNr Error Number from Logamatic
  * @return  index for error message in errMsgText
  * *******************************************************************/
-uint8_t getErrorTextIndex(uint8_t errorNr) {
-  switch (errorNr) {
-  case 0:
-    return 0;
-    break;
-  case 2:
-    return 1;
-    break;
-  case 3:
-    return 2;
-    break;
-  case 4:
-    return 3;
-    break;
-  case 8:
-    return 4;
-    break;
-  case 9:
-    return 5;
-    break;
-  case 10:
-    return 6;
-    break;
-  case 11:
-    return 7;
-    break;
-  case 12:
-    return 8;
-    break;
-  case 15:
-    return 9;
-    break;
-  case 16:
-    return 10;
-    break;
-  case 20:
-    return 11;
-    break;
-  case 24:
-    return 12;
-    break;
-  case 30:
-    return 13;
-    break;
-  case 31:
-    return 14;
-    break;
-  case 32:
-    return 15;
-    break;
-  case 33:
-    return 16;
-    break;
-  case 49:
-    return 17;
-    break;
-  case 50:
-    return 18;
-    break;
-  case 51:
-    return 19;
-    break;
-  case 52:
-    return 20;
-    break;
-  case 53:
-    return 21;
-    break;
-  case 54:
-    return 22;
-    break;
-  case 55:
-    return 23;
-    break;
-  case 56:
-    return 24;
-    break;
-  case 87:
-    return 25;
-    break;
-  case 92:
-    return 26;
-    break;
-  default:
-    return 27;
-    break;
-  }
-}
+uint8_t getErrorTextIndex(uint8_t errorNr) { return limit(0, errorNr, 214); }
 
 /**
  * *******************************************************************
