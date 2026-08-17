@@ -250,27 +250,27 @@ void mqttCyclic() {
     setupDone = true;
   }
 
-  // automatic reconnect to mqtt broker if connection is lost - try 5 times, then reboot
+  // Automatic reconnect to the mqtt broker if the connection is lost. This
+  // never reboots the device: an unreachable broker (Home Assistant being
+  // updated, the broker container restarting, a mistyped server address) says
+  // nothing about this device's health, and restarting would drop the decoded
+  // boiler state, both log ring buffers and the NTP sync without fixing
+  // anything. The old behaviour rebooted after ~150 s and kept doing so for
+  // the whole outage, which also made it very hard to push an OTA update to
+  // correct the setting that caused it. Retries continue indefinitely with a
+  // backoff capped at MQTT_RECONNECT * MQTT_RETRY_MAX.
   if (!mqtt_client.connected() && (wifi.connected || eth.connected)) {
     if (mqtt_retry == 0) {
       mqtt_retry++;
       mqtt_client.connect();
-      ESP_LOGI(TAG, "MQTT - connection attempt: 1/5");
+      ESP_LOGI(TAG, "MQTT - connection attempt: %i", mqtt_retry);
     } else if (mqttReconnectTimer.delayOnTrigger(true, MQTT_RECONNECT * mqtt_retry)) {
       mqttReconnectTimer.delayReset();
-      if (mqtt_retry < 5) {
-        mqtt_retry++;
-        mqtt_client.connect();
-        ESP_LOGI(TAG, "MQTT - connection attempt: %i/5", mqtt_retry);
-      } else {
-        ESP_LOGI(TAG, "MQTT connection not possible, esp rebooting...");
-        storeData(); // store Data before reboot
-        EspSysUtil::RestartReason::saveLocal("no mqtt connection");
-        yield();
-        delay(1000);
-        yield();
-        ESP.restart();
+      if (mqtt_retry < MQTT_RETRY_MAX) {
+        mqtt_retry++; // capped, so the backoff stops growing and cannot overflow
       }
+      mqtt_client.connect();
+      ESP_LOGI(TAG, "MQTT - connection attempt: %i", mqtt_retry);
     }
   }
 

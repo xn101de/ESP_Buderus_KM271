@@ -9,6 +9,13 @@ General Configuration
 #define WIFI_RECONNECT 30000 // Delay between wifi reconnection tries
 #define MQTT_RECONNECT 10000 // Delay between mqtt reconnection tries
 
+// Network outages must not turn into reboot loops - see checkWiFi() and
+// mqttCyclic(). Retries continue indefinitely; these only bound the backoff
+// and the last-resort WiFi restart.
+#define MQTT_RETRY_MAX 6         // caps the mqtt backoff at MQTT_RECONNECT * 6 = 60 s
+#define WIFI_RETRY_HARD_RESET 10 // every ~5 min of failure, tear the WiFi stack down before retrying
+#define WIFI_RETRY_REBOOT 60     // after ~30 min of continuous failure, reboot as a last resort
+
 enum e_MsgFltTyp {
   MSG_FILTER_ALARM = 0, // only alarms
   MSG_FILTER_INFO = 1,  // alarm + info messages
