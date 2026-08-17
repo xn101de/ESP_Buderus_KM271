@@ -23,6 +23,13 @@
 #define KM_NAK 0x15
 
 #define KM_RX_BUF_LEN 20 // Max number of RX bytes
+
+// If nothing at all arrives from the Logamatic for this long, treat the serial
+// link as down rather than keep reporting the last known state as if it were
+// live. The controller exchanges protocol bytes every few seconds even when no
+// value changes, so this is generous - it only trips on a genuinely dead link
+// (cable off, controller powered down, interface failed).
+#define KM271_RX_TIMEOUT 120000 // 2 minutes
 #define KM_TX_BUF_LEN 20 // Max number of TX bytes
 
 // The states to receive a single block of data.
@@ -49,9 +56,10 @@ struct KmRx_s {               // Rx structure for one rx block
 };
 
 struct KmSerialStats {
-  unsigned long TxBytes; // sent Bytes
-  unsigned long RxBytes; // received Bytes
-  bool logModeActive;    // Logging active
+  unsigned long TxBytes;    // sent Bytes
+  unsigned long RxBytes;    // received Bytes
+  unsigned long lastRxTime; // millis() of the last byte received from the Logamatic
+  bool logModeActive;       // Logging active
 };
 
 // This struicure contains all values read from the heating controller.

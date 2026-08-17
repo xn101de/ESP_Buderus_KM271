@@ -89,7 +89,8 @@ void cyclicKM271() {
   // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
   if (Serial2.readBytes(&rxByte, 1)) { // Wait for RX byte, if timeout, just loop and read again
 
-    kmSerialStats.RxBytes++; // increase received bytes
+    kmSerialStats.RxBytes++;             // increase received bytes
+    kmSerialStats.lastRxTime = millis(); // liveness of the serial link
 
     // Protocol handling
     kmRxBcc ^= rxByte; // Calculate BCC
@@ -152,8 +153,24 @@ void cyclicKM271() {
     } // end-case
   }   // end-if
 
-  // global status logmode active
-  kmSerialStats.logModeActive = (KmRxBlockState == KM_TSK_LOGGING);
+  // Global status logmode active. KmRxBlockState is only ever advanced by
+  // *received* blocks, so on its own it stays at KM_TSK_LOGGING forever once
+  // the link dies - if the ribbon cable works loose or the Logamatic is
+  // switched off, the module would keep reporting "connected" and keep
+  // republishing its cached values with fresh timestamps. From Home Assistant
+  // that is indistinguishable from a healthy boiler, which is the worst
+  // possible failure mode for someone watching remotely. Require recent
+  // traffic as well, and drop back to KM_TSK_START so the link is
+  // re-negotiated automatically when it returns.
+  if (millis() - kmSerialStats.lastRxTime > KM271_RX_TIMEOUT) {
+    if (kmSerialStats.logModeActive) {
+      km271Msg(KM_TYP_MESSAGE, "no data from Logamatic - serial link considered down", "");
+    }
+    kmSerialStats.logModeActive = false;
+    KmRxBlockState = KM_TSK_START;
+  } else {
+    kmSerialStats.logModeActive = (KmRxBlockState == KM_TSK_LOGGING);
+  }
 }
 
 /**
@@ -1678,6 +1695,10 @@ e_ret km271ProtInit(int rxPin, int txPin) {
   memset((void *)&kmStatus, 0, sizeof(s_km271_status));
   memset((void *)&kmConfigStr, 0, sizeof(s_km271_config_str));
   memset((void *)&kmConfigNum, 0, sizeof(s_km271_config_num));
+
+  // start the link-liveness window here rather than at 0, so the timeout is
+  // measured from when we actually opened the port
+  kmSerialStats.lastRxTime = millis();
   return RET_OK;
 }
 
@@ -1709,6 +1730,9 @@ void sendKM271Info() {
 void sendKM271Debug() {
   JsonDocument infoJSON;
   infoJSON["logmode"] = kmSerialStats.logModeActive;
+  // seconds since the last byte from the Logamatic - lets a dashboard show how
+  // long a link has been down, instead of only that it is
+  infoJSON["rx_age_s"] = (millis() - kmSerialStats.lastRxTime) / 1000;
   portENTER_CRITICAL(&sendBufMux);
   infoJSON["send_cmd_busy"] = (send_buf[0] != 0);
   portEXIT_CRITICAL(&sendBufMux);
