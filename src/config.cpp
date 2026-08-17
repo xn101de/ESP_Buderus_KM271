@@ -23,6 +23,14 @@ void configInitValue();
 void checkGPIO();
 void configFinalCheck();
 
+// Fallback for every remote entry point that can flash or reconfigure the
+// device, used only until config.auth.password is set. It is compiled into a
+// public firmware, so it is not a secret - CHANGE IT via the web UI's Auth
+// settings after first login.
+static const char *DEFAULT_PASSWORD = "km271-2026!";
+
+const char *devicePassword() { return (strlen(config.auth.password) > 0) ? config.auth.password : DEFAULT_PASSWORD; }
+
 /**
  * *******************************************************************
  * @brief   Load a scalar config field from JSON, leaving the existing
@@ -281,37 +289,20 @@ void configGPIO() {
  * *******************************************************************/
 void configInitValue() {
 
-  memset((void *)&config, 0, sizeof(config));
+  // Assigning a value-initialised instance restores every default declared
+  // in config.h. This used to be a memset() to zero, which silently discarded
+  // all of them - most seriously auth.enable = true, so "config reset" (telnet)
+  // left the device with web authentication switched OFF and wrote that to
+  // flash. The oilmeter defaults (2.0 kg/h, 0.85 kg/l, 50 pulses, 500 ms) and
+  // ntp/log/debug enable flags were lost the same way. Doing it this way also
+  // means defaults added to config.h later can no longer be missed here.
+  config = s_config{};
 
-  // WiFi
+  // fields that have no in-class default
   snprintf(config.wifi.hostname, sizeof(config.wifi.hostname), "ESP-Buderus-KM271");
-
-  // MQTT
-  config.mqtt.port = 1883;
-  config.mqtt.enable = false;
   snprintf(config.mqtt.ha_topic, sizeof(config.mqtt.ha_topic), "homeassistant");
 
-  // NTP
-  snprintf(config.ntp.server, sizeof(config.ntp.server), "de.pool.ntp.org");
-  snprintf(config.ntp.tz, sizeof(config.ntp.tz), "CET-1CEST,M3.5.0,M10.5.0/3");
-  config.ntp.enable = true;
-
-  // heating circuits
-  config.km271.use_hc1 = false;
-  config.km271.use_hc2 = false;
-  config.km271.use_ww = false;
-
-  // km271
-  config.km271.use_alarmMsg = false;
-
-  // language
-  config.lang = 0;
-
-  // oilmeter
-  config.oilmeter.use_hardware_meter = false;
-  config.oilmeter.use_virtual_meter = false;
-
-  // gpio
+  // gpio: -1 means "unused", which is not the value-initialised 0
   memset(&config.gpio, -1, sizeof(config.gpio));
 }
 

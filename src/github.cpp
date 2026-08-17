@@ -3,7 +3,16 @@
 #include <github.h>
 #include <message.h>
 
-#define GITHUB_OWNER "dewenni"
+// Point the built-in updater at whichever repository this firmware is actually
+// built from. Leaving it on the upstream repo means one click on "update" in
+// the web UI silently replaces a patched build with upstream's, reverting every
+// local fix - and since the version check is "tag != VERSION" rather than
+// "tag is newer", it offers downgrades too.
+// NOTE: GithubReleaseOTA is used without setCa(), so the download is encrypted
+// but the server certificate is NOT verified, and the image itself is
+// unsigned. Anyone able to spoof DNS or MITM the device's egress can serve
+// arbitrary firmware here. Treat this button as trusted-network-only.
+#define GITHUB_OWNER "xn101de"
 #define GITHUB_REPO "ESP_Buderus_KM271"
 
 static const char *TAG = "GITHUB"; // LOG TAG

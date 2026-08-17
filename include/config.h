@@ -160,6 +160,12 @@ struct s_config {
 
 extern s_config config;
 extern bool setupMode;
+
+// The single password guarding every remote entry point that can flash or
+// reconfigure this device (web login, telnet, ArduinoOTA): whatever is set in
+// config.auth.password, or a compiled-in default if that was never set.
+const char *devicePassword();
+
 void configSetup();
 void configCyclic();
 void configSaveToFile();
