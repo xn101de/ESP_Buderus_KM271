@@ -449,25 +449,43 @@ void configSaveToFile() {
   doc["logger"]["order"] = config.log.order;
   doc["logger"]["level"] = config.log.level;
 
-  // Delete existing file, otherwise the configuration is appended to the file
-  LittleFS.remove(filename);
+  // Write to a temporary file first, then rename over the real one. The
+  // previous code removed config.json and then re-created it, which left a
+  // window where the file was absent or truncated. A power cut in that window
+  // (and configCyclic() saves on any change, so it is not a rare moment) meant
+  // the next boot failed to parse the config, fell back to defaults, and came
+  // up as an access point with no WiFi credentials - unrecoverable without
+  // physical access to the device.
+  const char *tmpFilename = "/config.json.tmp";
 
-  // Open file for writing
-  File file = LittleFS.open(filename, FILE_WRITE);
+  LittleFS.remove(tmpFilename); // leftover from an interrupted earlier attempt
+
+  File file = LittleFS.open(tmpFilename, FILE_WRITE);
   if (!file) {
-    ESP_LOGE(TAG, "Failed to create file");
+    ESP_LOGE(TAG, "Failed to create temporary config file");
     return;
   }
 
-  // Serialize JSON to file
-  if (serializeJson(doc, file) == 0) {
-    ESP_LOGE(TAG, "Failed to write to file");
-  } else {
-    ESP_LOGI(TAG, "config successfully saved to file: %s - Version: %i", filename, CFG_VERSION);
+  size_t written = serializeJson(doc, file);
+  file.close();
+
+  if (written == 0) {
+    ESP_LOGE(TAG, "Failed to write config - keeping the previous file");
+    LittleFS.remove(tmpFilename);
+    return;
   }
 
-  // Close the file
-  file.close();
+  // rename() cannot overwrite on LittleFS, so the old file has to go first.
+  // The window between these two calls is the one remaining exposure, but
+  // unlike before, a crash there leaves a complete config.json.tmp behind -
+  // which configLoadFromFile() recovers from on the next boot.
+  LittleFS.remove(filename);
+  if (!LittleFS.rename(tmpFilename, filename)) {
+    ESP_LOGE(TAG, "Failed to rename %s to %s", tmpFilename, filename);
+    return;
+  }
+
+  ESP_LOGI(TAG, "config successfully saved to file: %s - Version: %i", filename, CFG_VERSION);
 }
 
 /**
@@ -477,6 +495,8 @@ void configSaveToFile() {
  * @return  none
  * *******************************************************************/
 void configLoadFromFile() {
+  const char *tmpFilename = "/config.json.tmp";
+
   // Open file for reading
   File file = LittleFS.open(filename);
 
@@ -485,6 +505,25 @@ void configLoadFromFile() {
 
   // Deserialize the JSON document
   DeserializationError error = deserializeJson(doc, file);
+
+  // If the main file is missing or unparseable, try the temporary file left
+  // behind by configSaveToFile(). A crash between the remove() and the
+  // rename() there leaves a complete, valid config there - recovering from it
+  // is the difference between carrying on normally and coming up as an access
+  // point with no WiFi credentials.
+  if (error && LittleFS.exists(tmpFilename)) {
+    ESP_LOGW(TAG, "%s missing or corrupt - recovering from %s", filename, tmpFilename);
+    file.close();
+    file = LittleFS.open(tmpFilename);
+    error = deserializeJson(doc, file);
+    if (!error) {
+      file.close();
+      LittleFS.remove(filename);
+      LittleFS.rename(tmpFilename, filename);
+      file = LittleFS.open(filename);
+    }
+  }
+
   if (error) {
     ESP_LOGE(TAG, "Failed to read file, using default configuration and start wifi-AP");
     configInitValue();
