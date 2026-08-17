@@ -144,11 +144,7 @@ void setupTelnet() {
   telnet.onDisconnect(onTelnetDisconnect);
   telnet.onInputReceived(onTelnetInput);
 
-  // port 22 instead of the conventional telnet port 23 only reduces
-  // exposure to automated/opportunistic scans that target the well-known
-  // port - this is still plain, unencrypted telnet, not SSH, and moving
-  // the port is not a substitute for the password auth above.
-  if (telnet.begin(22, false)) {
+  if (telnet.begin(23, false)) {
     ESP_LOGI(TAG, "Telnet Server running!");
   } else {
     ESP_LOGI(TAG, "Telnet Server error!");
