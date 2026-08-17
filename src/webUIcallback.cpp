@@ -572,7 +572,9 @@ void webCallback(const char *elementId, const char *value) {
     webUI.wsUpdateWebLog("", "clr_log"); // clear log
   }
   if (strcmp(elementId, "cfg_logger_filter") == 0) {
-    config.log.filter = strtoul(value, NULL, 10);
+    // indexes LOG_FILTER[][6] - clamp like cfg_lang above, otherwise a crafted
+    // WebSocket frame leaves the device one log write away from a wild read
+    config.log.filter = constrain((int)strtoul(value, NULL, 10), 0, LOG_FILTER_SYSTEM);
     clearLogBuffer(KMLOG);
     webUI.wsUpdateWebLog("", "clr_log"); // clear log
   }

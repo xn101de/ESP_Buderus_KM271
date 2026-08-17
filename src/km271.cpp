@@ -1729,6 +1729,16 @@ void km271SetDateTimeDTI(tm dti) {
   uint8_t local_buf[8];
 
   char dateTimeInfo[128] = {'\0'}; // Date and time info String
+
+  // Refuse to write an implausible date to the boiler. The Logamatic's
+  // day/night heating program is driven by exactly this clock, so a bogus
+  // value silently changes when the house is heated. The web UI builds its
+  // tm from separate date and time messages, so a partially-filled struct
+  // (year 1900, month 0, day 0) can reach here.
+  if (dti.tm_year < 116 || dti.tm_mon < 0 || dti.tm_mon > 11 || dti.tm_mday < 1 || dti.tm_mday > 31) {
+    km271Msg(KM_TYP_MESSAGE, "date/time not set: implausible date", "");
+    return;
+  }
   /* ---------------- INFO ---------------------------------
   dti.tm_year + 1900  // years since 1900
   dti.tm_mon + 1      // January = 0 (!)
@@ -1797,6 +1807,17 @@ void km271SetDateTimeNTP() {
   tm dti;                          // the structure tm holds time information in a more convient way
   time(&now);                      // read the current time
   localtime_r(&now, &dti);         // update the structure tm with the current time
+
+  // Refuse to write an unsynchronised clock to the boiler: until NTP resolves,
+  // time() returns an epoch-1970 value. The automatic caller in main.cpp
+  // already gates on getLocalTime(), but the "cmd/datetime" MQTT topic calls
+  // this directly - so an HA automation firing right after a reboot could set
+  // the Logamatic's clock, and therefore its heating program, to 1970.
+  if (dti.tm_year < 116) { // years since 1900, so 116 = 2016
+    km271Msg(KM_TYP_MESSAGE, "date/time not set: no valid time source (NTP not synced)", "");
+    return;
+  }
+
   /* ---------------- INFO ---------------------------------
   dti.tm_year + 1900  // years since 1900
   dti.tm_mon + 1      // January = 0 (!)
@@ -1859,7 +1880,7 @@ void km271SetDateTimeNTP() {
  * @param   cmdPara: parameter as integer
  * @return  none
  * *******************************************************************/
-void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
+void km271sendCmd(e_km271_sendCmd sendCmd, int cmdPara) {
   uint8_t local_buf[8];
 
   switch (sendCmd) {

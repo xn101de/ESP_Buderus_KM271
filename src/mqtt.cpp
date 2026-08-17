@@ -328,10 +328,14 @@ void processMqttMessage() {
   ESP_LOGD(TAG, "process msg from buffer: %s, %s", msgCpy.topic, msgCpy.payload);
 
   // payload as number
-  int16_t intVal = 0;
+  // wide enough that the range checks inside km271sendCmd() see the value the
+  // user actually sent: as int16_t, publishing 286 to a 30..60 setpoint wrapped
+  // to 30 and was accepted as valid, and the oil counter (in 1/100 L) could only
+  // express 0..327.67 L before wrapping negative
+  long intVal = 0;
   float floatVal = 0.0;
   if (msgCpy.len > 0) {
-    intVal = atoi(msgCpy.payload);
+    intVal = atol(msgCpy.payload);
     floatVal = atoff(msgCpy.payload);
   }
 
