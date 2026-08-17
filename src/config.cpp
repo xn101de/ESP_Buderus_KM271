@@ -76,6 +76,16 @@ void configSetup() {
 
 void configFinalCheck() {
 
+  // Clamp every field that is later used as an array index. The web UI
+  // callbacks validate these, but a hand-edited or uploaded config.json does
+  // not go through them - and config.lang indexes arrays of exactly MAX_LANG
+  // entries, while config.log.filter indexes LOG_FILTER[][6]. An out-of-range
+  // value read from the file would otherwise be dereferenced as a wild
+  // pointer on the next web UI page load or log write.
+  config.lang = constrain(config.lang, 0, MAX_LANG - 1);
+  config.mqtt.lang = constrain(config.mqtt.lang, 0, MAX_LANG - 1);
+  config.log.filter = constrain(config.log.filter, 0, LOG_FILTER_SYSTEM);
+
   // set log level
   setLogLevel(config.log.level);
 

@@ -329,7 +329,7 @@ s_km271_alarm_str *km271GetAlarmMsgAdr();
 
 void sendKM271Info();
 void sendKM271Debug();
-void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara);
+void km271sendCmd(e_km271_sendCmd sendCmd, int cmdPara);
 void km271sendCmdFlt(e_km271_sendCmd sendCmd, float cmdPara);
 bool km271sendServiceCmd(uint8_t cmdPara[8]);
 bool km271GetLogMode();
