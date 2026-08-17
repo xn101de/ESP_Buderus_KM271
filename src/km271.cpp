@@ -56,6 +56,27 @@ static char kmTmpMsg[256];
 static bool kmInitDone = false;
 static bool km271RefreshActive = false;
 
+// send_buf is written from whatever task handles the caller (loop() for
+// MQTT/date-sync, but the AsyncTCP task for WebUI/WebSocket commands) and
+// read/cleared from the loop task's cyclicKM271()/handleRxBlock() - a short
+// critical section keeps a command's 8 bytes from being read half-written,
+// or two concurrent commands from interleaving into the same buffer.
+static portMUX_TYPE sendBufMux = portMUX_INITIALIZER_UNLOCKED;
+
+/**
+ * *******************************************************************
+ * @brief   atomically publish a fully-prepared 8-byte command into
+ *          send_buf, so the loop-task reader never observes a partial
+ *          write
+ * @param   buf: the 8 command bytes to publish
+ * @return  none
+ * *******************************************************************/
+static void commitSendBuf(const uint8_t buf[8]) {
+  portENTER_CRITICAL(&sendBufMux);
+  memcpy(send_buf, buf, sizeof(send_buf));
+  portEXIT_CRITICAL(&sendBufMux);
+}
+
 /**
  * *******************************************************************
  * @brief   Main Handling of KM271
@@ -171,16 +192,23 @@ void handleRxBlock(uint8_t *data, int len, uint8_t bcc) {
     break;
   case KM_TSK_LOGGING:                       // We have reached logging state
     if (data[0] == KM_STX) {                 // If STX, this is a send request
-      if (send_buf[0] != 0) {                // If a send-request is active,
+      portENTER_CRITICAL(&sendBufMux);
+      bool sendPending = (send_buf[0] != 0); // If a send-request is active,
+      portEXIT_CRITICAL(&sendBufMux);
+      if (sendPending) {
         sendTxBlock(KmCSTX, sizeof(KmCSTX)); // send STX to KM271 to request for send data
       } else {
         sendTxBlock(KmCDLE, sizeof(KmCDLE)); // Confirm handling of block by sending DLE
       }
-    } else if (data[0] == KM_DLE) {            // KM271 is ready to receive
-      sendTxBlock(send_buf, sizeof(send_buf)); // send buffer
-      memset(send_buf, 0, sizeof(send_buf));   // clear buffer
-      KmRxBlockState = KM_TSK_START;           // start log-mode again, to get all new values
-    } else {                                   // If not STX, it should be valid data block
+    } else if (data[0] == KM_DLE) { // KM271 is ready to receive
+      uint8_t txBuf[8];
+      portENTER_CRITICAL(&sendBufMux);
+      memcpy(txBuf, send_buf, sizeof(send_buf));
+      memset(send_buf, 0, sizeof(send_buf)); // clear buffer
+      portEXIT_CRITICAL(&sendBufMux);
+      sendTxBlock(txBuf, sizeof(txBuf));   // send buffer (outside the critical section - it does blocking Serial2 I/O)
+      KmRxBlockState = KM_TSK_START;       // start log-mode again, to get all new values
+    } else {                               // If not STX, it should be valid data block
       parseInfo(data, len);                    // Handle data block with event information
       sendTxBlock(KmCDLE, sizeof(KmCDLE));     // Confirm handling of block by sending DLE
     }
@@ -1681,7 +1709,9 @@ void sendKM271Info() {
 void sendKM271Debug() {
   JsonDocument infoJSON;
   infoJSON["logmode"] = kmSerialStats.logModeActive;
+  portENTER_CRITICAL(&sendBufMux);
   infoJSON["send_cmd_busy"] = (send_buf[0] != 0);
+  portEXIT_CRITICAL(&sendBufMux);
   infoJSON["sw_version"] = VERSION;
   infoJSON["date-time"] = EspStrUtil::getDateTimeString();
   char sendInfoJSON[255] = {'\0'};
@@ -1696,6 +1726,8 @@ void sendKM271Debug() {
  * @return  none
  * *******************************************************************/
 void km271SetDateTimeDTI(tm dti) {
+  uint8_t local_buf[8];
+
   char dateTimeInfo[128] = {'\0'}; // Date and time info String
   /* ---------------- INFO ---------------------------------
   dti.tm_year + 1900  // years since 1900
@@ -1707,17 +1739,18 @@ void km271SetDateTimeDTI(tm dti) {
   dti.tm_wday         // days since Sunday 0-6
   dti.tm_isdst        // Daylight Saving Time flag
   --------------------------------------------------------- */
-  send_buf[0] = 0x01;        // address
-  send_buf[1] = 0x00;        // address
-  send_buf[2] = dti.tm_sec;  // seconds
-  send_buf[3] = dti.tm_min;  // minutes
-  send_buf[4] = dti.tm_hour; // hours (bit 0-4)
+  local_buf[0] = 0x01;        // address
+  local_buf[1] = 0x00;        // address
+  local_buf[2] = dti.tm_sec;  // seconds
+  local_buf[3] = dti.tm_min;  // minutes
+  local_buf[4] = dti.tm_hour; // hours (bit 0-4)
   if (dti.tm_isdst > 0)
-    send_buf[4] |= (1 << 6) & 0x40;                     // if time ist DST  (bit 6)
-  send_buf[5] = dti.tm_mday;                            // day of month
-  send_buf[6] = dti.tm_mon + 1;                         // month
-  send_buf[6] |= (((dti.tm_wday + 6) % 7) << 4) & 0x70; // day of week (Logamatic: 0=monday...6=sunday / wday: 0=sunday...6=saturday)
-  send_buf[7] = dti.tm_year;                            // year year < 100 means 19xx / year > 100 means 20xx
+    local_buf[4] |= (1 << 6) & 0x40;                     // if time ist DST  (bit 6)
+  local_buf[5] = dti.tm_mday;                            // day of month
+  local_buf[6] = dti.tm_mon + 1;                         // month
+  local_buf[6] |= (((dti.tm_wday + 6) % 7) << 4) & 0x70; // day of week (Logamatic: 0=monday...6=sunday / wday: 0=sunday...6=saturday)
+  local_buf[7] = dti.tm_year;                            // year year < 100 means 19xx / year > 100 means 20xx
+  commitSendBuf(local_buf);
 
   char wday[4] = {'\0'};
   switch ((dti.tm_wday + 6) % 7) {
@@ -1757,6 +1790,8 @@ void km271SetDateTimeDTI(tm dti) {
  * @return  none
  * *******************************************************************/
 void km271SetDateTimeNTP() {
+  uint8_t local_buf[8];
+
   char dateTimeInfo[128] = {'\0'}; // Date and time info String
   time_t now;                      // this is the epoch
   tm dti;                          // the structure tm holds time information in a more convient way
@@ -1772,17 +1807,18 @@ void km271SetDateTimeNTP() {
   dti.tm_wday         // days since Sunday 0-6
   dti.tm_isdst        // Daylight Saving Time flag
   --------------------------------------------------------- */
-  send_buf[0] = 0x01;        // address
-  send_buf[1] = 0x00;        // address
-  send_buf[2] = dti.tm_sec;  // seconds
-  send_buf[3] = dti.tm_min;  // minutes
-  send_buf[4] = dti.tm_hour; // hours (bit 0-4)
+  local_buf[0] = 0x01;        // address
+  local_buf[1] = 0x00;        // address
+  local_buf[2] = dti.tm_sec;  // seconds
+  local_buf[3] = dti.tm_min;  // minutes
+  local_buf[4] = dti.tm_hour; // hours (bit 0-4)
   if (dti.tm_isdst > 0)
-    send_buf[4] |= (1 << 6) & 0x40;                     // if time ist DST  (bit 6)
-  send_buf[5] = dti.tm_mday;                            // day of month
-  send_buf[6] = dti.tm_mon + 1;                         // month
-  send_buf[6] |= (((dti.tm_wday + 6) % 7) << 4) & 0x70; // day of week (Logamatic: 0=monday...6=sunday / wday: 0=sunday...6=saturday)
-  send_buf[7] = dti.tm_year;                            // year
+    local_buf[4] |= (1 << 6) & 0x40;                     // if time ist DST  (bit 6)
+  local_buf[5] = dti.tm_mday;                            // day of month
+  local_buf[6] = dti.tm_mon + 1;                         // month
+  local_buf[6] |= (((dti.tm_wday + 6) % 7) << 4) & 0x70; // day of week (Logamatic: 0=monday...6=sunday / wday: 0=sunday...6=saturday)
+  local_buf[7] = dti.tm_year;                            // year
+  commitSendBuf(local_buf);
 
   char wday[4] = {'\0'};
   switch ((dti.tm_wday + 6) % 7) {
@@ -1824,18 +1860,20 @@ void km271SetDateTimeNTP() {
  * @return  none
  * *******************************************************************/
 void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
+  uint8_t local_buf[8];
 
   switch (sendCmd) {
   case KM271_SENDCMD_HC1_OPMODE:
     if (cmdPara >= 0 && cmdPara <= 2) {
-      send_buf[0] = 0x07; // Data-Type für HK1 (0x07)
-      send_buf[1] = 0x00; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = 0x65;
-      send_buf[4] = 0x65;
-      send_buf[5] = 0x65;
-      send_buf[6] = cmdPara; // 0:Night | 1:Day | 2:AUTO
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x07; // Data-Type für HK1 (0x07)
+      local_buf[1] = 0x00; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = 0x65;
+      local_buf[4] = 0x65;
+      local_buf[5] = 0x65;
+      local_buf[6] = cmdPara; // 0:Night | 1:Day | 2:AUTO
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %d", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::HC1_OPMODE[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -1847,14 +1885,15 @@ void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
 
   case KM271_SENDCMD_HC2_OPMODE:
     if (cmdPara >= 0 && cmdPara <= 2) {
-      send_buf[0] = 0x08; // Data-Type für HK2 (0x08)
-      send_buf[1] = 0x00; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = 0x65;
-      send_buf[4] = 0x65;
-      send_buf[5] = 0x65;
-      send_buf[6] = cmdPara; // 0:Night | 1:Day | 2:AUTO
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x08; // Data-Type für HK2 (0x08)
+      local_buf[1] = 0x00; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = 0x65;
+      local_buf[4] = 0x65;
+      local_buf[5] = 0x65;
+      local_buf[6] = cmdPara; // 0:Night | 1:Day | 2:AUTO
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %d", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::HC2_OPMODE[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -1866,14 +1905,15 @@ void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
 
   case KM271_SENDCMD_HC1_DESIGN_TEMP:
     if (cmdPara >= 30 && cmdPara <= 90) {
-      send_buf[0] = 0x07; // Data-Type für HK1 (0x07)
-      send_buf[1] = 0x0E; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = 0x65;
-      send_buf[4] = 0x65;
-      send_buf[5] = 0x65;
-      send_buf[6] = cmdPara; // Resolution: 1 °C - Range: 30 – 90 °C WE: 75 °C
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x07; // Data-Type für HK1 (0x07)
+      local_buf[1] = 0x0E; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = 0x65;
+      local_buf[4] = 0x65;
+      local_buf[5] = 0x65;
+      local_buf[6] = cmdPara; // Resolution: 1 °C - Range: 30 – 90 °C WE: 75 °C
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %d", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::HC1_INTERPR[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -1885,14 +1925,15 @@ void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
 
   case KM271_SENDCMD_HC2_DESIGN_TEMP:
     if (cmdPara >= 30 && cmdPara <= 90) {
-      send_buf[0] = 0x08; // Data-Type für HK2 (0x08)
-      send_buf[1] = 0x0E; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = 0x65;
-      send_buf[4] = 0x65;
-      send_buf[5] = 0x65;
-      send_buf[6] = cmdPara; // Resolution: 1 °C - Range: 30 – 90 °C WE: 75 °C
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x08; // Data-Type für HK2 (0x08)
+      local_buf[1] = 0x0E; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = 0x65;
+      local_buf[4] = 0x65;
+      local_buf[5] = 0x65;
+      local_buf[6] = cmdPara; // Resolution: 1 °C - Range: 30 – 90 °C WE: 75 °C
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %d", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::HC2_INTERPR[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -1904,14 +1945,15 @@ void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
 
   case KM271_SENDCMD_HC1_PROGRAMM:
     if (cmdPara >= 0 && cmdPara <= 8) {
-      send_buf[0] = 0x11;    // Data-Type HK1 Schaltuhr
-      send_buf[1] = 0x00;    // Offset
-      send_buf[2] = cmdPara; // Programmnummer 0..8
-      send_buf[3] = 0x65;
-      send_buf[4] = 0x65;
-      send_buf[5] = 0x65;
-      send_buf[6] = 0x65;
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x11;    // Data-Type HK1 Schaltuhr
+      local_buf[1] = 0x00;    // Offset
+      local_buf[2] = cmdPara; // Programmnummer 0..8
+      local_buf[3] = 0x65;
+      local_buf[4] = 0x65;
+      local_buf[5] = 0x65;
+      local_buf[6] = 0x65;
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %d", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::HC1_PROGRAM[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -1923,14 +1965,15 @@ void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
 
   case KM271_SENDCMD_HC1_HOLIDAYS:
     if (cmdPara >= 0 && cmdPara <= 99) {
-      send_buf[0] = 0x11; // Data-Type HK1 Schaltuhr
-      send_buf[1] = 0x00; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = 0x65;
-      send_buf[4] = 0x65;
-      send_buf[5] = cmdPara; // Holiday days -  Resolution: 1 Day - Range: 0 – 99 Days
-      send_buf[6] = 0x65;
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x11; // Data-Type HK1 Schaltuhr
+      local_buf[1] = 0x00; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = 0x65;
+      local_buf[4] = 0x65;
+      local_buf[5] = cmdPara; // Holiday days -  Resolution: 1 Day - Range: 0 – 99 Days
+      local_buf[6] = 0x65;
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %d", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::HC1_HOLIDAY_DAYS[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -1942,14 +1985,15 @@ void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
 
   case KM271_SENDCMD_HC2_PROGRAMM:
     if (cmdPara >= 0 && cmdPara <= 8) {
-      send_buf[0] = 0x12;    // Data-Type
-      send_buf[1] = 0x00;    // Offset
-      send_buf[2] = cmdPara; // Programmnummer 0..8
-      send_buf[3] = 0x65;
-      send_buf[4] = 0x65;
-      send_buf[5] = 0x65;
-      send_buf[6] = 0x65;
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x12;    // Data-Type
+      local_buf[1] = 0x00;    // Offset
+      local_buf[2] = cmdPara; // Programmnummer 0..8
+      local_buf[3] = 0x65;
+      local_buf[4] = 0x65;
+      local_buf[5] = 0x65;
+      local_buf[6] = 0x65;
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %d", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::HC2_PROGRAM[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -1961,14 +2005,15 @@ void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
 
   case KM271_SENDCMD_HC2_HOLIDAYS:
     if (cmdPara >= 0 && cmdPara <= 99) {
-      send_buf[0] = 0x12; // Data-Type HK2
-      send_buf[1] = 0x00; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = 0x65;
-      send_buf[4] = 0x65;
-      send_buf[5] = cmdPara; // Resolution: 1 Day - Range: 0 – 99 Days
-      send_buf[6] = 0x65;
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x12; // Data-Type HK2
+      local_buf[1] = 0x00; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = 0x65;
+      local_buf[4] = 0x65;
+      local_buf[5] = cmdPara; // Resolution: 1 Day - Range: 0 – 99 Days
+      local_buf[6] = 0x65;
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %d", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::HC2_HOLIDAY_DAYS[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -1980,14 +2025,15 @@ void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
 
   case KM271_SENDCMD_WW_OPMODE:
     if (cmdPara >= 0 && cmdPara <= 2) {
-      send_buf[0] = 0x0C;    // Data-Type für Warmwasser (0x0C)
-      send_buf[1] = 0x0E;    // Offset
-      send_buf[2] = cmdPara; // 0:Night | 1:Day | 2:AUTO
-      send_buf[3] = 0x65;
-      send_buf[4] = 0x65;
-      send_buf[5] = 0x65;
-      send_buf[6] = 0x65;
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x0C;    // Data-Type für Warmwasser (0x0C)
+      local_buf[1] = 0x0E;    // Offset
+      local_buf[2] = cmdPara; // 0:Night | 1:Day | 2:AUTO
+      local_buf[3] = 0x65;
+      local_buf[4] = 0x65;
+      local_buf[5] = 0x65;
+      local_buf[6] = 0x65;
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %d", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::WW_OPMODE[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -1999,14 +2045,15 @@ void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
 
   case KM271_SENDCMD_HC1_SUMMER:
     if (cmdPara >= 9 && cmdPara <= 31) {
-      send_buf[0] = 0x07; // Data-Type für HK1 (0x07)
-      send_buf[1] = 0x00; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = cmdPara; // 9:Winter | 10°-30° | 31:Summer
-      send_buf[4] = 0x65;
-      send_buf[5] = 0x65;
-      send_buf[6] = 0x65;
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x07; // Data-Type für HK1 (0x07)
+      local_buf[1] = 0x00; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = cmdPara; // 9:Winter | 10°-30° | 31:Summer
+      local_buf[4] = 0x65;
+      local_buf[5] = 0x65;
+      local_buf[6] = 0x65;
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %d", KM_INFO_MSG::CMD[config.mqtt.lang],
                KM_CFG_TOPIC::HC1_SUMMER_THRESHOLD[config.mqtt.lang], KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -2018,14 +2065,15 @@ void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
 
   case KM271_SENDCMD_HC2_SUMMER:
     if (cmdPara >= 9 && cmdPara <= 31) {
-      send_buf[0] = 0x08; // Data-Type für HK2 (0x08)
-      send_buf[1] = 0x00; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = cmdPara; // 9:Winter | 10°-30° | 31:Summer
-      send_buf[4] = 0x65;
-      send_buf[5] = 0x65;
-      send_buf[6] = 0x65;
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x08; // Data-Type für HK2 (0x08)
+      local_buf[1] = 0x00; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = cmdPara; // 9:Winter | 10°-30° | 31:Summer
+      local_buf[4] = 0x65;
+      local_buf[5] = 0x65;
+      local_buf[6] = 0x65;
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %d", KM_INFO_MSG::CMD[config.mqtt.lang],
                KM_CFG_TOPIC::HC2_SUMMER_THRESHOLD[config.mqtt.lang], KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -2037,14 +2085,15 @@ void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
 
   case KM271_SENDCMD_HC1_FROST:
     if (cmdPara >= -20 && cmdPara <= 10) {
-      send_buf[0] = 0x07; // Data-Type für HK1 (0x07)
-      send_buf[1] = 0x31; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = 0x65;
-      send_buf[4] = 0x65;
-      send_buf[5] = 0x65;
-      send_buf[6] = 0x65;
-      send_buf[7] = (cmdPara > 0) ? cmdPara : cmdPara + 256; // -20° ... +10° (add 256 if value is negative)
+      local_buf[0] = 0x07; // Data-Type für HK1 (0x07)
+      local_buf[1] = 0x31; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = 0x65;
+      local_buf[4] = 0x65;
+      local_buf[5] = 0x65;
+      local_buf[6] = 0x65;
+      local_buf[7] = (cmdPara > 0) ? cmdPara : cmdPara + 256; // -20° ... +10° (add 256 if value is negative)
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %d", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::HC1_FROST_THRESHOLD[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -2056,14 +2105,15 @@ void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
 
   case KM271_SENDCMD_HC2_FROST:
     if (cmdPara >= -20 && cmdPara <= 10) {
-      send_buf[0] = 0x08; // Data-Type für HK2 (0x08)
-      send_buf[1] = 0x31; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = 0x65;
-      send_buf[4] = 0x65;
-      send_buf[5] = 0x65;
-      send_buf[6] = 0x65;
-      send_buf[7] = (cmdPara > 0) ? cmdPara : cmdPara + 256; // -20° ... +10° (add 256 if value is negative)
+      local_buf[0] = 0x08; // Data-Type für HK2 (0x08)
+      local_buf[1] = 0x31; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = 0x65;
+      local_buf[4] = 0x65;
+      local_buf[5] = 0x65;
+      local_buf[6] = 0x65;
+      local_buf[7] = (cmdPara > 0) ? cmdPara : cmdPara + 256; // -20° ... +10° (add 256 if value is negative)
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %d", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::HC2_FROST_THRESHOLD[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -2075,14 +2125,15 @@ void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
 
   case KM271_SENDCMD_HC1_SWITCH_OFF_THRESHOLD:
     if (cmdPara >= -20 && cmdPara <= 10) {
-      send_buf[0] = 0x07; // Data-Type für HK1 (0x07)
-      send_buf[1] = 0x15; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = 0x65;
-      send_buf[4] = (cmdPara > 0) ? cmdPara : cmdPara + 256; // -20° ... +10° (add 256 if value is negative)
-      send_buf[5] = 0x65;
-      send_buf[6] = 0x65;
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x07; // Data-Type für HK1 (0x07)
+      local_buf[1] = 0x15; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = 0x65;
+      local_buf[4] = (cmdPara > 0) ? cmdPara : cmdPara + 256; // -20° ... +10° (add 256 if value is negative)
+      local_buf[5] = 0x65;
+      local_buf[6] = 0x65;
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %d", KM_INFO_MSG::CMD[config.mqtt.lang],
                KM_CFG_TOPIC::HC1_SWITCH_OFF_THRESHOLD[config.mqtt.lang], KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -2094,14 +2145,15 @@ void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
 
   case KM271_SENDCMD_HC2_SWITCH_OFF_THRESHOLD:
     if (cmdPara >= -20 && cmdPara <= 10) {
-      send_buf[0] = 0x08; // Data-Type für HK2 (0x08)
-      send_buf[1] = 0x15; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = 0x65;
-      send_buf[4] = (cmdPara > 0) ? cmdPara : cmdPara + 256; // -20° ... +10° (add 256 if value is negative)
-      send_buf[5] = 0x65;
-      send_buf[6] = 0x65;
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x08; // Data-Type für HK2 (0x08)
+      local_buf[1] = 0x15; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = 0x65;
+      local_buf[4] = (cmdPara > 0) ? cmdPara : cmdPara + 256; // -20° ... +10° (add 256 if value is negative)
+      local_buf[5] = 0x65;
+      local_buf[6] = 0x65;
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %d", KM_INFO_MSG::CMD[config.mqtt.lang],
                KM_CFG_TOPIC::HC2_SWITCH_OFF_THRESHOLD[config.mqtt.lang], KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -2113,14 +2165,15 @@ void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
 
   case KM271_SENDCMD_WW_SETPOINT:
     if (cmdPara >= 30 && cmdPara <= 60) {
-      send_buf[0] = 0x0C; // Data-Type für Warmwater (0x0C)
-      send_buf[1] = 0x07; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = 0x65;
-      send_buf[4] = 0x65;
-      send_buf[5] = cmdPara; // 30°-60°
-      send_buf[6] = 0x65;
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x0C; // Data-Type für Warmwater (0x0C)
+      local_buf[1] = 0x07; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = 0x65;
+      local_buf[4] = 0x65;
+      local_buf[5] = cmdPara; // 30°-60°
+      local_buf[6] = 0x65;
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %d", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::WW_TEMP[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -2132,14 +2185,15 @@ void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
 
   case KM271_SENDCMD_WW_PUMP_CYCLES:
     if (cmdPara >= 0 && cmdPara <= 7) {
-      send_buf[0] = 0x0C; // Data-Type für Warmwater (0x0C)
-      send_buf[1] = 0x0E; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = 0x65;
-      send_buf[4] = 0x65;
-      send_buf[5] = 0x65;
-      send_buf[6] = 0x65;
-      send_buf[7] = cmdPara; // 0:OFF - 1..6 - 7:ON
+      local_buf[0] = 0x0C; // Data-Type für Warmwater (0x0C)
+      local_buf[1] = 0x0E; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = 0x65;
+      local_buf[4] = 0x65;
+      local_buf[5] = 0x65;
+      local_buf[6] = 0x65;
+      local_buf[7] = cmdPara; // 0:OFF - 1..6 - 7:ON
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %d", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::WW_CIRCULATION[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -2151,14 +2205,15 @@ void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
 
   case KM271_SENDCMD_HC1_SWITCH_ON_TEMP:
     if (cmdPara >= 0 && cmdPara <= 10) {
-      send_buf[0] = 0x07;    // Data-Type für HK1 (0x07)
-      send_buf[1] = 0x15;    // Offset
-      send_buf[2] = cmdPara; // Resolution: 1 °C - Range: 0 – 10 °C
-      send_buf[3] = 0x65;
-      send_buf[4] = 0x65;
-      send_buf[5] = 0x65;
-      send_buf[6] = 0x65;
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x07;    // Data-Type für HK1 (0x07)
+      local_buf[1] = 0x15;    // Offset
+      local_buf[2] = cmdPara; // Resolution: 1 °C - Range: 0 – 10 °C
+      local_buf[3] = 0x65;
+      local_buf[4] = 0x65;
+      local_buf[5] = 0x65;
+      local_buf[6] = 0x65;
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %d", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::HC1_SWITCH_ON_TEMP[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -2170,14 +2225,15 @@ void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
 
   case KM271_SENDCMD_HC2_SWITCH_ON_TEMP:
     if (cmdPara >= 0 && cmdPara <= 10) {
-      send_buf[0] = 0x08;    // Data-Type für HK2 (0x08)
-      send_buf[1] = 0x15;    // Offset
-      send_buf[2] = cmdPara; // Resolution: 1 °C - Range: 0 – 10 °C
-      send_buf[3] = 0x65;
-      send_buf[4] = 0x65;
-      send_buf[5] = 0x65;
-      send_buf[6] = 0x65;
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x08;    // Data-Type für HK2 (0x08)
+      local_buf[1] = 0x15;    // Offset
+      local_buf[2] = cmdPara; // Resolution: 1 °C - Range: 0 – 10 °C
+      local_buf[3] = 0x65;
+      local_buf[4] = 0x65;
+      local_buf[5] = 0x65;
+      local_buf[6] = 0x65;
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %d", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::HC2_SWITCH_ON_TEMP[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -2189,14 +2245,15 @@ void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
 
   case KM271_SENDCMD_HC1_REDUCTION_MODE:
     if (cmdPara >= 0 && cmdPara <= 3) {
-      send_buf[0] = 0x07; // Data-Type für HK1 (0x07)
-      send_buf[1] = 0x1c; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = cmdPara; // {"off", "fixed", "room", "outdoors"}
-      send_buf[4] = 0x65;
-      send_buf[5] = 0x65;
-      send_buf[6] = 0x65;
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x07; // Data-Type für HK1 (0x07)
+      local_buf[1] = 0x1c; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = cmdPara; // {"off", "fixed", "room", "outdoors"}
+      local_buf[4] = 0x65;
+      local_buf[5] = 0x65;
+      local_buf[6] = 0x65;
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %d", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::HC1_REDUCTION_MODE[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -2208,14 +2265,15 @@ void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
 
   case KM271_SENDCMD_HC2_REDUCTION_MODE:
     if (cmdPara >= 0 && cmdPara <= 3) {
-      send_buf[0] = 0x08; // Data-Type für HK2 (0x08)
-      send_buf[1] = 0x1c; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = cmdPara; // {"off", "fixed", "room", "outdoors"}
-      send_buf[4] = 0x65;
-      send_buf[5] = 0x65;
-      send_buf[6] = 0x65;
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x08; // Data-Type für HK2 (0x08)
+      local_buf[1] = 0x1c; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = cmdPara; // {"off", "fixed", "room", "outdoors"}
+      local_buf[4] = 0x65;
+      local_buf[5] = 0x65;
+      local_buf[6] = 0x65;
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %d", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::HC2_REDUCTION_MODE[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -2238,18 +2296,20 @@ void km271sendCmd(e_km271_sendCmd sendCmd, int8_t cmdPara) {
  * @return  none
  * *******************************************************************/
 void km271sendCmdFlt(e_km271_sendCmd sendCmd, float cmdPara) {
+  uint8_t local_buf[8];
 
   switch (sendCmd) {
   case KM271_SENDCMD_HC1_DAY_SETPOINT:
     if (cmdPara >= 10 && cmdPara <= 30) {
-      send_buf[0] = 0x07; // Data-Type für HK1 (0x07)
-      send_buf[1] = 0x00; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = 0x65;
-      send_buf[4] = 0x65;
-      send_buf[5] = trunc(2.0 * cmdPara + 0.5); // Resolution: 0.5 °C - Range: 10 – 30 °C
-      send_buf[6] = 0x65;
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x07; // Data-Type für HK1 (0x07)
+      local_buf[1] = 0x00; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = 0x65;
+      local_buf[4] = 0x65;
+      local_buf[5] = trunc(2.0 * cmdPara + 0.5); // Resolution: 0.5 °C - Range: 10 – 30 °C
+      local_buf[6] = 0x65;
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %.1f", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::HC1_DAY_TEMP[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -2261,14 +2321,15 @@ void km271sendCmdFlt(e_km271_sendCmd sendCmd, float cmdPara) {
 
   case KM271_SENDCMD_HC1_NIGHT_SETPOINT:
     if (cmdPara >= 10 && cmdPara <= 30) {
-      send_buf[0] = 0x07; // Data-Type für HK1 (0x07)
-      send_buf[1] = 0x00; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = 0x65;
-      send_buf[4] = trunc(2.0 * cmdPara + 0.5); // Resolution: 0.5 °C - Range: 10 – 30 °C
-      send_buf[5] = 0x65;
-      send_buf[6] = 0x65;
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x07; // Data-Type für HK1 (0x07)
+      local_buf[1] = 0x00; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = 0x65;
+      local_buf[4] = trunc(2.0 * cmdPara + 0.5); // Resolution: 0.5 °C - Range: 10 – 30 °C
+      local_buf[5] = 0x65;
+      local_buf[6] = 0x65;
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %.1f", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::HC1_NIGHT_TEMP[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -2280,14 +2341,15 @@ void km271sendCmdFlt(e_km271_sendCmd sendCmd, float cmdPara) {
 
   case KM271_SENDCMD_HC2_DAY_SETPOINT:
     if (cmdPara >= 10 && cmdPara <= 30) {
-      send_buf[0] = 0x08; // Data-Type für HK2 (0x08)
-      send_buf[1] = 0x00; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = 0x65;
-      send_buf[4] = 0x65;
-      send_buf[5] = trunc(2.0 * cmdPara + 0.5); // Resolution: 0.5 °C - Range: 10 – 30 °C
-      send_buf[6] = 0x65;
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x08; // Data-Type für HK2 (0x08)
+      local_buf[1] = 0x00; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = 0x65;
+      local_buf[4] = 0x65;
+      local_buf[5] = trunc(2.0 * cmdPara + 0.5); // Resolution: 0.5 °C - Range: 10 – 30 °C
+      local_buf[6] = 0x65;
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %.1f", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::HC2_DAY_TEMP[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -2299,14 +2361,15 @@ void km271sendCmdFlt(e_km271_sendCmd sendCmd, float cmdPara) {
 
   case KM271_SENDCMD_HC2_NIGHT_SETPOINT:
     if (cmdPara >= 10 && cmdPara <= 30) {
-      send_buf[0] = 0x08; // Data-Type für HK2 (0x08)
-      send_buf[1] = 0x00; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = 0x65;
-      send_buf[4] = trunc(2.0 * cmdPara + 0.5); // Resolution: 0.5 °C - Range: 10 – 30 °C
-      send_buf[5] = 0x65;
-      send_buf[6] = 0x65;
-      send_buf[7] = 0x65;
+      local_buf[0] = 0x08; // Data-Type für HK2 (0x08)
+      local_buf[1] = 0x00; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = 0x65;
+      local_buf[4] = trunc(2.0 * cmdPara + 0.5); // Resolution: 0.5 °C - Range: 10 – 30 °C
+      local_buf[5] = 0x65;
+      local_buf[6] = 0x65;
+      local_buf[7] = 0x65;
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %.1f", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::HC2_NIGHT_TEMP[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -2318,14 +2381,15 @@ void km271sendCmdFlt(e_km271_sendCmd sendCmd, float cmdPara) {
 
   case KM271_SENDCMD_HC1_HOLIDAY_SETPOINT:
     if (cmdPara >= 10 && cmdPara <= 30) {
-      send_buf[0] = 0x07; // Data-Type für HK1 (0x07)
-      send_buf[1] = 0x00; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = 0x65;
-      send_buf[4] = 0x65;
-      send_buf[5] = 0x65;
-      send_buf[6] = 0x65;
-      send_buf[7] = trunc(2.0 * cmdPara + 0.5); // Resolution: 0.5 °C - Range: 10 – 30 °C
+      local_buf[0] = 0x07; // Data-Type für HK1 (0x07)
+      local_buf[1] = 0x00; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = 0x65;
+      local_buf[4] = 0x65;
+      local_buf[5] = 0x65;
+      local_buf[6] = 0x65;
+      local_buf[7] = trunc(2.0 * cmdPara + 0.5); // Resolution: 0.5 °C - Range: 10 – 30 °C
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %.1f", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::HC1_HOLIDAY_TEMP[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -2337,14 +2401,15 @@ void km271sendCmdFlt(e_km271_sendCmd sendCmd, float cmdPara) {
 
   case KM271_SENDCMD_HC2_HOLIDAY_SETPOINT:
     if (cmdPara >= 10 && cmdPara <= 30) {
-      send_buf[0] = 0x08; // Data-Type für HK1 (0x08)
-      send_buf[1] = 0x00; // Offset
-      send_buf[2] = 0x65;
-      send_buf[3] = 0x65;
-      send_buf[4] = 0x65;
-      send_buf[5] = 0x65;
-      send_buf[6] = 0x65;
-      send_buf[7] = trunc(2.0 * cmdPara + 0.5); // Resolution: 0.5 °C - Range: 10 – 30 °C
+      local_buf[0] = 0x08; // Data-Type für HK1 (0x08)
+      local_buf[1] = 0x00; // Offset
+      local_buf[2] = 0x65;
+      local_buf[3] = 0x65;
+      local_buf[4] = 0x65;
+      local_buf[5] = 0x65;
+      local_buf[6] = 0x65;
+      local_buf[7] = trunc(2.0 * cmdPara + 0.5); // Resolution: 0.5 °C - Range: 10 – 30 °C
+      commitSendBuf(local_buf);
       snprintf(kmTmpMsg, sizeof(kmTmpMsg), "%s: %s - %s: %.1f", KM_INFO_MSG::CMD[config.mqtt.lang], KM_CFG_TOPIC::HC2_HOLIDAY_TEMP[config.mqtt.lang],
                KM_INFO_MSG::VALUE[config.mqtt.lang], cmdPara);
     } else {
@@ -2383,9 +2448,7 @@ bool km271sendServiceCmd(uint8_t cmdPara[8]) {
     return false;
   }
   // service command with 8 pre checked hex parameters
-  for (uint8_t i = 0; i < 8; i++) {
-    send_buf[i] = cmdPara[i];
-  }
+  commitSendBuf(cmdPara);
   return true;
 }
 

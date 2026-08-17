@@ -33,6 +33,13 @@ static int km271sendCnt = 0;
 static muTimer km271sendTimer;
 std::queue<s_MqttMessage> mqttCmdQueue;
 
+// addMqttCmd() is called from onMqttMessage(), which AsyncMqttClient invokes
+// directly on the AsyncTCP task - mqttCyclic()/processMqttMessage() drain the
+// same queue from the loop task. std::queue (backed by std::deque) gives no
+// thread-safety of its own, so every push/pop/size/empty/front access below
+// is wrapped in this short critical section.
+static portMUX_TYPE mqttQueueMux = portMUX_INITIALIZER_UNLOCKED;
+
 /**
  * *******************************************************************
  * @brief   add message to mqtt command buffer
@@ -40,7 +47,9 @@ std::queue<s_MqttMessage> mqttCmdQueue;
  * @return  none
  * *******************************************************************/
 void addMqttCmd(const char *topic, const char *payload, int len) {
-  if (mqttCmdQueue.size() < MAX_MQTT_CMD) {
+  portENTER_CRITICAL(&mqttQueueMux);
+  bool queueFull = (mqttCmdQueue.size() >= MAX_MQTT_CMD);
+  if (!queueFull) {
     s_MqttMessage message;
     strncpy(message.topic, topic, sizeof(message.topic) - 1);
     message.topic[sizeof(message.topic) - 1] = '\0';
@@ -51,6 +60,10 @@ void addMqttCmd(const char *topic, const char *payload, int len) {
     message.len = len;
 
     mqttCmdQueue.push(message);
+  }
+  portEXIT_CRITICAL(&mqttQueueMux);
+
+  if (!queueFull) {
     ESP_LOGD(TAG, "add msg to buffer: %s, %s", topic, payload);
   } else {
     ESP_LOGE(TAG, "too many commands within too short time");
@@ -219,7 +232,10 @@ void mqttSetup() {
 void mqttCyclic() {
 
   // process incoming messages
-  if (!mqttCmdQueue.empty()) {
+  portENTER_CRITICAL(&mqttQueueMux);
+  bool haveCmd = !mqttCmdQueue.empty();
+  portEXIT_CRITICAL(&mqttQueueMux);
+  if (haveCmd) {
     processMqttMessage();
   }
 
@@ -300,7 +316,9 @@ void mqttCyclic() {
  * *******************************************************************/
 void processMqttMessage() {
 
+  portENTER_CRITICAL(&mqttQueueMux);
   s_MqttMessage msgCpy = mqttCmdQueue.front();
+  portEXIT_CRITICAL(&mqttQueueMux);
 
   ESP_LOGD(TAG, "process msg from buffer: %s, %s", msgCpy.topic, msgCpy.payload);
 
@@ -655,5 +673,7 @@ void processMqttMessage() {
     }
   }
 
+  portENTER_CRITICAL(&mqttQueueMux);
   mqttCmdQueue.pop(); // next entry in Queue
+  portEXIT_CRITICAL(&mqttQueueMux);
 }
