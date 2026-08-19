@@ -25,6 +25,22 @@ void configFinalCheck();
 
 /**
  * *******************************************************************
+ * @brief   Load a scalar config field from JSON, leaving the existing
+ *          value (in-class default, or whatever was already loaded)
+ *          untouched if the key is absent - a missing key must never
+ *          silently zero a field that was never meant to change.
+ * @param   target  reference to the config struct field to update
+ * @param   value   the corresponding doc["section"]["field"] lookup
+ * @return  none
+ * *******************************************************************/
+template <typename T> void loadCfg(T &target, JsonVariantConst value) {
+  if (!value.isNull()) {
+    target = value.as<T>();
+  }
+}
+
+/**
+ * *******************************************************************
  * @brief   Setup for intitial configuration
  * @param   none
  * @return  none
@@ -478,17 +494,17 @@ void configLoadFromFile() {
 
     config.version = doc["version"];
 
-    config.oilmeter.use_hardware_meter = doc["oilmeter"]["use_hardware_meter"];
-    config.oilmeter.use_virtual_meter = doc["oilmeter"]["use_virtual_meter"];
-    config.oilmeter.consumption_kg_h = doc["oilmeter"]["consumption_kg_h"];
-    config.oilmeter.oil_density_kg_l = doc["oilmeter"]["oil_density_kg_l"];
-    config.oilmeter.pulse_per_liter = doc["oilmeter"]["pulse_per_liter"];
-    config.oilmeter.virt_calc_offset = doc["oilmeter"]["virt_calc_offset"];
-    config.oilmeter.debounce_time = doc["oilmeter"]["debounce_time"];
+    loadCfg(config.oilmeter.use_hardware_meter, doc["oilmeter"]["use_hardware_meter"]);
+    loadCfg(config.oilmeter.use_virtual_meter, doc["oilmeter"]["use_virtual_meter"]);
+    loadCfg(config.oilmeter.consumption_kg_h, doc["oilmeter"]["consumption_kg_h"]);
+    loadCfg(config.oilmeter.oil_density_kg_l, doc["oilmeter"]["oil_density_kg_l"]);
+    loadCfg(config.oilmeter.pulse_per_liter, doc["oilmeter"]["pulse_per_liter"]);
+    loadCfg(config.oilmeter.virt_calc_offset, doc["oilmeter"]["virt_calc_offset"]);
+    loadCfg(config.oilmeter.debounce_time, doc["oilmeter"]["debounce_time"]);
 
-    config.lang = doc["lang"];
+    loadCfg(config.lang, doc["lang"]);
 
-    config.sim.enable = doc["sim"]["enable"];
+    loadCfg(config.sim.enable, doc["sim"]["enable"]);
 
     EspStrUtil::readJSONstring(config.wifi.ssid, sizeof(config.wifi.ssid), doc["wifi"]["ssid"]);
 
@@ -504,28 +520,28 @@ void configLoadFromFile() {
     }
 
     EspStrUtil::readJSONstring(config.wifi.hostname, sizeof(config.wifi.hostname), doc["wifi"]["hostname"]);
-    config.wifi.static_ip = doc["wifi"]["static_ip"];
+    loadCfg(config.wifi.static_ip, doc["wifi"]["static_ip"]);
     EspStrUtil::readJSONstring(config.wifi.ipaddress, sizeof(config.wifi.ipaddress), doc["wifi"]["ipaddress"]);
     EspStrUtil::readJSONstring(config.wifi.subnet, sizeof(config.wifi.subnet), doc["wifi"]["subnet"]);
     EspStrUtil::readJSONstring(config.wifi.gateway, sizeof(config.wifi.gateway), doc["wifi"]["gateway"]);
     EspStrUtil::readJSONstring(config.wifi.dns, sizeof(config.wifi.dns), doc["wifi"]["dns"]);
 
-    config.eth.enable = doc["eth"]["enable"];
+    loadCfg(config.eth.enable, doc["eth"]["enable"]);
     EspStrUtil::readJSONstring(config.eth.hostname, sizeof(config.eth.hostname), doc["eth"]["hostname"]);
-    config.eth.static_ip = doc["eth"]["static_ip"];
+    loadCfg(config.eth.static_ip, doc["eth"]["static_ip"]);
     EspStrUtil::readJSONstring(config.eth.ipaddress, sizeof(config.eth.ipaddress), doc["eth"]["ipaddress"]);
     EspStrUtil::readJSONstring(config.eth.ipaddress, sizeof(config.eth.ipaddress), doc["eth"]["ipaddress"]);
     EspStrUtil::readJSONstring(config.eth.subnet, sizeof(config.eth.subnet), doc["eth"]["subnet"]);
     EspStrUtil::readJSONstring(config.eth.gateway, sizeof(config.eth.gateway), doc["eth"]["gateway"]);
     EspStrUtil::readJSONstring(config.eth.dns, sizeof(config.eth.dns), doc["eth"]["dns"]);
-    config.eth.gpio_sck = doc["eth"]["gpio_sck"];
-    config.eth.gpio_mosi = doc["eth"]["gpio_mosi"];
-    config.eth.gpio_miso = doc["eth"]["gpio_miso"];
-    config.eth.gpio_cs = doc["eth"]["gpio_cs"];
-    config.eth.gpio_irq = doc["eth"]["gpio_irq"];
-    config.eth.gpio_rst = doc["eth"]["gpio_rst"];
+    loadCfg(config.eth.gpio_sck, doc["eth"]["gpio_sck"]);
+    loadCfg(config.eth.gpio_mosi, doc["eth"]["gpio_mosi"]);
+    loadCfg(config.eth.gpio_miso, doc["eth"]["gpio_miso"]);
+    loadCfg(config.eth.gpio_cs, doc["eth"]["gpio_cs"]);
+    loadCfg(config.eth.gpio_irq, doc["eth"]["gpio_irq"]);
+    loadCfg(config.eth.gpio_rst, doc["eth"]["gpio_rst"]);
 
-    config.mqtt.enable = doc["mqtt"]["enable"];
+    loadCfg(config.mqtt.enable, doc["mqtt"]["enable"]);
     EspStrUtil::readJSONstring(config.mqtt.server, sizeof(config.mqtt.server), doc["mqtt"]["server"]);
     EspStrUtil::readJSONstring(config.mqtt.user, sizeof(config.mqtt.user), doc["mqtt"]["user"]);
 
@@ -541,34 +557,34 @@ void configLoadFromFile() {
     }
 
     EspStrUtil::readJSONstring(config.mqtt.topic, sizeof(config.mqtt.topic), doc["mqtt"]["topic"]);
-    config.mqtt.port = doc["mqtt"]["port"];
-    config.mqtt.config_retain = doc["mqtt"]["config_retain"];
-    config.mqtt.lang = doc["mqtt"]["language"];
-    config.mqtt.cyclicSendMin = doc["mqtt"]["cyclic_send"];
-    config.mqtt.ha_enable = doc["mqtt"]["ha_enable"];
+    loadCfg(config.mqtt.port, doc["mqtt"]["port"]);
+    loadCfg(config.mqtt.config_retain, doc["mqtt"]["config_retain"]);
+    loadCfg(config.mqtt.lang, doc["mqtt"]["language"]);
+    loadCfg(config.mqtt.cyclicSendMin, doc["mqtt"]["cyclic_send"]);
+    loadCfg(config.mqtt.ha_enable, doc["mqtt"]["ha_enable"]);
     EspStrUtil::readJSONstring(config.mqtt.ha_topic, sizeof(config.mqtt.ha_topic), doc["mqtt"]["ha_topic"]);
     EspStrUtil::readJSONstring(config.mqtt.ha_device, sizeof(config.mqtt.ha_device), doc["mqtt"]["ha_device"]);
 
-    config.ntp.enable = doc["ntp"]["enable"];
+    loadCfg(config.ntp.enable, doc["ntp"]["enable"]);
     EspStrUtil::readJSONstring(config.ntp.server, sizeof(config.ntp.server), doc["ntp"]["server"]);
     EspStrUtil::readJSONstring(config.ntp.tz, sizeof(config.ntp.tz), doc["ntp"]["tz"]);
-    config.ntp.auto_sync = doc["ntp"]["auto_sync"];
+    loadCfg(config.ntp.auto_sync, doc["ntp"]["auto_sync"]);
 
-    config.gpio.led_wifi = doc["gpio"]["led_wifi"];
-    config.gpio.led_heartbeat = doc["gpio"]["led_heartbeat"];
-    config.gpio.led_logmode = doc["gpio"]["led_logmode"];
-    config.gpio.led_oilcounter = doc["gpio"]["led_oilcounter"];
-    config.gpio.trigger_oilcounter = doc["gpio"]["trigger_oilcounter"];
-    config.gpio.km271_RX = doc["gpio"]["km271_RX"];
-    config.gpio.km271_TX = doc["gpio"]["km271_TX"];
+    loadCfg(config.gpio.led_wifi, doc["gpio"]["led_wifi"]);
+    loadCfg(config.gpio.led_heartbeat, doc["gpio"]["led_heartbeat"]);
+    loadCfg(config.gpio.led_logmode, doc["gpio"]["led_logmode"]);
+    loadCfg(config.gpio.led_oilcounter, doc["gpio"]["led_oilcounter"]);
+    loadCfg(config.gpio.trigger_oilcounter, doc["gpio"]["trigger_oilcounter"]);
+    loadCfg(config.gpio.km271_RX, doc["gpio"]["km271_RX"]);
+    loadCfg(config.gpio.km271_TX, doc["gpio"]["km271_TX"]);
 
-    config.km271.use_hc1 = doc["km271"]["use_hc1"];
-    config.km271.use_hc2 = doc["km271"]["use_hc2"];
-    config.km271.use_ww = doc["km271"]["use_ww"];
-    config.km271.use_solar = doc["km271"]["use_solar"];
-    config.km271.use_alarmMsg = doc["km271"]["use_alarmMsg"];
+    loadCfg(config.km271.use_hc1, doc["km271"]["use_hc1"]);
+    loadCfg(config.km271.use_hc2, doc["km271"]["use_hc2"]);
+    loadCfg(config.km271.use_ww, doc["km271"]["use_ww"]);
+    loadCfg(config.km271.use_solar, doc["km271"]["use_solar"]);
+    loadCfg(config.km271.use_alarmMsg, doc["km271"]["use_alarmMsg"]);
 
-    config.auth.enable = doc["auth"]["enable"];
+    loadCfg(config.auth.enable, doc["auth"]["enable"]);
     EspStrUtil::readJSONstring(config.auth.user, sizeof(config.auth.user), doc["auth"]["user"]);
 
     if (config.version == 0) {
@@ -582,23 +598,23 @@ void configLoadFromFile() {
       }
     }
 
-    config.debug.enable = doc["debug"]["enable"];
+    loadCfg(config.debug.enable, doc["debug"]["enable"]);
     EspStrUtil::readJSONstring(config.debug.filter, sizeof(config.debug.filter), doc["debug"]["filter"]);
     if (strlen(config.debug.filter) == 0) {
       strcpy(config.debug.filter, "XX_XX_XX_XX_XX_XX_XX_XX_XX_XX_XX");
     }
 
-    config.sensor.ch1_enable = doc["sensor"]["ch1_enable"];
+    loadCfg(config.sensor.ch1_enable, doc["sensor"]["ch1_enable"]);
     EspStrUtil::readJSONstring(config.sensor.ch1_name, sizeof(config.sensor.ch1_name), doc["sensor"]["ch1_name"]);
     EspStrUtil::readJSONstring(config.sensor.ch1_description, sizeof(config.sensor.ch1_description), doc["sensor"]["ch1_description"]);
-    config.sensor.ch1_gpio = doc["sensor"]["ch1_gpio"];
-    config.sensor.ch2_enable = doc["sensor"]["ch2_enable"];
+    loadCfg(config.sensor.ch1_gpio, doc["sensor"]["ch1_gpio"]);
+    loadCfg(config.sensor.ch2_enable, doc["sensor"]["ch2_enable"]);
     EspStrUtil::readJSONstring(config.sensor.ch2_name, sizeof(config.sensor.ch2_name), doc["sensor"]["ch2_name"]);
     EspStrUtil::readJSONstring(config.sensor.ch2_description, sizeof(config.sensor.ch2_description), doc["sensor"]["ch2_description"]);
-    config.sensor.ch2_gpio = doc["sensor"]["ch2_gpio"];
+    loadCfg(config.sensor.ch2_gpio, doc["sensor"]["ch2_gpio"]);
 
-    config.pushover.enable = doc["pushover"]["enable"];
-    config.pushover.filter = doc["pushover"]["filter"];
+    loadCfg(config.pushover.enable, doc["pushover"]["enable"]);
+    loadCfg(config.pushover.filter, doc["pushover"]["filter"]);
 
     if (config.version == 0) {
       EspStrUtil::readJSONstring(config.pushover.token, sizeof(config.pushover.token), doc["pushover"]["token"]);
@@ -622,10 +638,10 @@ void configLoadFromFile() {
       }
     }
 
-    config.log.enable = doc["logger"]["enable"];
-    config.log.filter = doc["logger"]["filter"];
-    config.log.order = doc["logger"]["order"];
-    config.log.level = doc["logger"]["level"];
+    loadCfg(config.log.enable, doc["logger"]["enable"]);
+    loadCfg(config.log.filter, doc["logger"]["filter"]);
+    loadCfg(config.log.order, doc["logger"]["order"]);
+    loadCfg(config.log.level, doc["logger"]["level"]);
   }
 
   if (strlen(config.wifi.ssid) == 0) {
