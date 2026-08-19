@@ -352,8 +352,14 @@ void processMqttMessage() {
       // check if all 8 hex values are found
       if (i == 8) {
         // everything seems to be valid - call service function
-        km271Msg(KM_TYP_MESSAGE, "service message accepted", "");
-        km271sendServiceCmd(hexArray);
+        if (km271sendServiceCmd(hexArray)) {
+          km271Msg(KM_TYP_MESSAGE, "service message accepted", "");
+        } else {
+          // first byte is the KM271 Data-Type and is also used as the
+          // "command pending" sentinel for the send-queue - 0x00 can't be
+          // queued, it would be silently dropped instead of transmitted.
+          km271Msg(KM_TYP_MESSAGE, "service message rejected: first byte must not be 00", "");
+        }
       } else {
         // not enough hex values found
         km271Msg(KM_TYP_MESSAGE, "not enough hex parameter", "");

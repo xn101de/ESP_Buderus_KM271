@@ -1,6 +1,7 @@
 
 #include <basics.h>
 #include <km271.h>
+#include <language.h>
 #include <message.h>
 #include <oilmeter.h>
 #include <simulation.h>
@@ -369,7 +370,12 @@ void webCallback(const char *elementId, const char *value) {
     snprintf(config.mqtt.password, sizeof(config.mqtt.password), "%s", value);
   }
   if (strcmp(elementId, "cfg_mqtt_language") == 0) {
-    config.mqtt.lang = strtoul(value, NULL, 10);
+    // clamp: this indexes fixed-size [MAX_LANG] text arrays throughout
+    // km271.cpp/mqtt.cpp/telnet.cpp - an out-of-range value here previously
+    // caused an out-of-bounds read of a garbage const char* on the next
+    // decode, i.e. a likely crash from any client able to reach the (by
+    // default unauthenticated) web UI.
+    config.mqtt.lang = constrain((int)strtoul(value, NULL, 10), 0, MAX_LANG - 1);
   }
   if (strcmp(elementId, "cfg_mqtt_cyclic_send") == 0) {
     config.mqtt.cyclicSendMin = strtoul(value, NULL, 10);
@@ -539,7 +545,7 @@ void webCallback(const char *elementId, const char *value) {
 
   // Language
   if (strcmp(elementId, "cfg_lang") == 0) {
-    config.lang = strtoul(value, NULL, 10);
+    config.lang = constrain((int)strtoul(value, NULL, 10), 0, MAX_LANG - 1); // see cfg_mqtt_language above
     updateAllElements();
   }
 
