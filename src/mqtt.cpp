@@ -120,11 +120,16 @@ void onMqttMessage(char *topic, char *payload, AsyncMqttClientMessageProperties 
     strncpy(msgCpy.topic, topic, sizeof(msgCpy.topic) - 1);
     msgCpy.topic[sizeof(msgCpy.topic) - 1] = '\0';
   }
-  if (payload == NULL) {
-    msgCpy.payload[0] = '\0';
-  } else if (len > 0 && len < PAYLOAD_LEN) {
+  if (payload != NULL && len > 0 && len < PAYLOAD_LEN) {
     memcpy(msgCpy.payload, payload, len);
     msgCpy.payload[len] = '\0';
+  } else {
+    // Also covers len >= PAYLOAD_LEN, which previously fell through every
+    // branch and left msgCpy.payload as uninitialised stack. That garbage was
+    // then queued, atoi()'d and could be written to the boiler as a setpoint
+    // whenever it happened to parse inside a valid range.
+    msgCpy.payload[0] = '\0';
+    msgCpy.len = 0;
   }
 
   addMqttCmd(msgCpy.topic, msgCpy.payload, msgCpy.len);
@@ -355,20 +360,29 @@ void processMqttMessage() {
       // Iteration thru payload
       char *token = strtok(msgCpy.payload, "_");
       size_t i = 0;
+      bool validHex = true;
       while (token != NULL && i < 8) {
         // check, if the substring contains valid hex values
         size_t tokenLen = strlen(token);
         if (tokenLen != 2 || !isxdigit(token[0]) || !isxdigit(token[1])) {
-          // invalid hex values found
+          // Invalid hex - report and stop parsing, but fall through to the
+          // queue pop at the end of this function. This used to "return",
+          // which left the message at the head of the queue forever:
+          // mqttCyclic() re-entered this function on every loop iteration,
+          // republishing the error at loop rate and blocking every subsequent
+          // MQTT command until the device was rebooted.
           km271Msg(KM_TYP_MESSAGE, "invalid hex parameter", "");
-          return;
+          validHex = false;
+          break;
         }
         hexArray[i] = strtol(token, NULL, 16); // convert hex strings to uint8_t
         token = strtok(NULL, "_");             // next substring
         i++;
       }
       // check if all 8 hex values are found
-      if (i == 8) {
+      if (!validHex) {
+        // already reported above
+      } else if (i == 8) {
         // everything seems to be valid - call service function
         if (km271sendServiceCmd(hexArray)) {
           km271Msg(KM_TYP_MESSAGE, "service message accepted", "");

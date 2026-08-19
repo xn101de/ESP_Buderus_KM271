@@ -93,6 +93,11 @@ void setup() {
     ota.setActive(false);
   });
   ArduinoOTA.setHostname(config.wifi.hostname);
+  // Without a password ArduinoOTA skips its challenge-response entirely, so
+  // anyone on the network could push arbitrary firmware (espota.py -i <ip>)
+  // with no credentials at all - a second flash path that bypasses the auth
+  // on the web UI's /update route. Guard it with the same device password.
+  ArduinoOTA.setPassword(devicePassword());
   ArduinoOTA.begin();
 
   // setup for km271

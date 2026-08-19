@@ -21,11 +21,8 @@ static const char *TAG = "TELNET"; // LOG TAG
 // commands like "test crash" (crashes the device) and "config reset" with
 // no login at all, regardless of the web UI's config.auth.enable setting.
 // Require a password on every telnet session, independent of that setting.
-// If config.auth.password was never set (empty string), fall back to this
-// compiled-in default - CHANGE IT after first login (there is currently no
-// telnet command to do so; use the web UI's Auth settings, which share the
-// same config.auth.password field).
-static const char *TELNET_DEFAULT_PASSWORD = "km271-2026!";
+// The credential itself is devicePassword() (see config.h), shared with the
+// web login and ArduinoOTA.
 static bool telnetAuthenticated = false;
 
 /* P R O T O T Y P E S ********************************************************/
@@ -72,11 +69,6 @@ void telnetShell() {
   telnet.print(ansi.reset());
 }
 
-// the password to check telnet logins against: whatever is configured via
-// the web UI (config.auth.password, shared with web-login), or the
-// compiled-in default if that was never set.
-const char *telnetPassword() { return (strlen(config.auth.password) > 0) ? config.auth.password : TELNET_DEFAULT_PASSWORD; }
-
 void telnetPasswordPrompt() {
   telnet.print(ansi.setFG(ANSI_BRIGHT_YELLOW));
   telnet.print("Password: ");
@@ -109,7 +101,7 @@ void onTelnetInput(String str) {
     // disconnects the client immediately instead of re-prompting, so a
     // scripted brute-force has to pay the cost of a full reconnect per
     // attempt rather than free-running in one session.
-    if (str == telnetPassword()) {
+    if (str == devicePassword()) {
       telnetAuthenticated = true;
       ESP_LOGI(TAG, "Telnet: %s authenticated", telnet.getIP().c_str());
       telnet.println("\nAccess granted.");
