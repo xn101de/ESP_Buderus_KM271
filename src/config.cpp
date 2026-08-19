@@ -551,6 +551,7 @@ void configLoadFromFile() {
     if (config.version == 0) {
       EspStrUtil::readJSONstring(config.wifi.password, sizeof(config.wifi.password), doc["wifi"]["password"]);
     } else {
+      memset(encrypted, 0, sizeof(encrypted));
       EspStrUtil::readJSONstring(encrypted, sizeof(encrypted), doc["wifi"]["password"]);
       if (EspStrUtil::decryptPassword(encrypted, key, config.wifi.password, sizeof(config.wifi.password))) {
         // ESP_LOGD(TAG, "decrypted WiFi password: %s", config.wifi.password);
@@ -588,6 +589,7 @@ void configLoadFromFile() {
     if (config.version == 0) {
       EspStrUtil::readJSONstring(config.mqtt.password, sizeof(config.mqtt.password), doc["mqtt"]["password"]);
     } else {
+      memset(encrypted, 0, sizeof(encrypted));
       EspStrUtil::readJSONstring(encrypted, sizeof(encrypted), doc["mqtt"]["password"]);
       if (EspStrUtil::decryptPassword(encrypted, key, config.mqtt.password, sizeof(config.mqtt.password))) {
         // ESP_LOGD(TAG, "decrypted mqtt password: %s", config.mqtt.password);
@@ -630,6 +632,7 @@ void configLoadFromFile() {
     if (config.version == 0) {
       EspStrUtil::readJSONstring(config.auth.password, sizeof(config.auth.password), doc["auth"]["password"]);
     } else {
+      memset(encrypted, 0, sizeof(encrypted));
       EspStrUtil::readJSONstring(encrypted, sizeof(encrypted), doc["auth"]["password"]);
       if (EspStrUtil::decryptPassword(encrypted, key, config.auth.password, sizeof(config.auth.password))) {
         // ESP_LOGD(TAG, "decrypted auth password: %s", config.auth.password);
@@ -659,6 +662,7 @@ void configLoadFromFile() {
     if (config.version == 0) {
       EspStrUtil::readJSONstring(config.pushover.token, sizeof(config.pushover.token), doc["pushover"]["token"]);
     } else {
+      memset(encrypted, 0, sizeof(encrypted));
       EspStrUtil::readJSONstring(encrypted, sizeof(encrypted), doc["pushover"]["token"]);
       if (EspStrUtil::decryptPassword(encrypted, key, config.pushover.token, sizeof(config.pushover.token))) {
         // ESP_LOGD(TAG, "decrypted pushover token: %s", config.pushover.token);
@@ -670,6 +674,7 @@ void configLoadFromFile() {
     if (config.version == 0) {
       EspStrUtil::readJSONstring(config.pushover.user_key, sizeof(config.pushover.user_key), doc["pushover"]["user_key"]);
     } else {
+      memset(encrypted, 0, sizeof(encrypted));
       EspStrUtil::readJSONstring(encrypted, sizeof(encrypted), doc["pushover"]["user_key"]);
       if (EspStrUtil::decryptPassword(encrypted, key, config.pushover.user_key, sizeof(config.pushover.user_key))) {
         // ESP_LOGD(TAG, "decrypted pushover user_key: %s", config.pushover.user_key);
