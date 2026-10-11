@@ -43,7 +43,14 @@ void ntpSetup() {
  * @return  none
  * *******************************************************************/
 void onWiFiStationConnected(WiFiEvent_t event, WiFiEventInfo_t info) {
-  wifi_retry = 0;
+  // Deliberately NOT resetting wifi_retry here. Associating is not the same as
+  // being usable: everything downstream (MQTT, the web UI's view of the link)
+  // is gated on wifi.connected, which only onWiFiGotIP() sets. Resetting the
+  // counter on association meant that a station which associates but never
+  // completes DHCP pinned wifi_retry at 0 forever, so neither
+  // WIFI_RETRY_HARD_RESET nor WIFI_RETRY_REBOOT in checkWiFi() could ever be
+  // reached - the device stayed unusable indefinitely instead of recovering.
+  // The counter is now cleared only when the link is actually complete.
   ESP_LOGI(TAG, "Connected to AP successfully!");
 }
 
@@ -69,6 +76,7 @@ void onWiFiGotIP(WiFiEvent_t event, WiFiEventInfo_t info) {
   snprintf(wifi.ipAddress, sizeof(wifi.ipAddress), "%s", WiFi.localIP().toString().c_str());
   ESP_LOGI(TAG, "IP address: %s", wifi.ipAddress);
   wifi.connected = true;
+  wifi_retry = 0; // the link is complete, not merely associated
 }
 
 /**
@@ -98,6 +106,21 @@ void checkWiFi() {
     // up in a state that reconnecting alone does not clear, and by then
     // nothing is working anyway, so a reboot costs nothing and may be the
     // only way back without physical access to the device.
+    // Note that clearing wifi_retry later makes this reboot reachable in a case
+    // where it previously was not: a DHCP server that is down while the access
+    // point is up. That is accepted deliberately. The stack reset below runs
+    // six times first, and if ~30 minutes of teardown-and-retry has not got an
+    // address, a restart is a reasonable last resort - the pre-existing
+    // behaviour this replaced rebooted after 5 attempts, so this is still an
+    // order of magnitude more patient.
+    //
+    // Guarding this on the station not being associated was tried and removed:
+    // the association state toggles on every retry, because WiFi.begin() tears
+    // down an existing association, so such a guard only delays the reboot by
+    // an unpredictable number of ticks rather than preventing it. A guard that
+    // does not do what it says is worse than none. Preserving the old property
+    // properly needs the time of the last association tracked, which is a
+    // change worth making on its own if it turns out to be wanted.
     if (wifi_retry >= WIFI_RETRY_REBOOT && !ota.isActive()) {
       ESP_LOGI(TAG, "no WiFi after %i attempts - rebooting as a last resort", wifi_retry);
       storeData(); // store Data before reboot
